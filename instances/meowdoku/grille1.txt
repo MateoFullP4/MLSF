@@ -1,0 +1,10 @@
+c Grille 1
+GRID 6 6
+ZONES A B C D E F
+
+A B C B B D
+A B B B B D
+A A B D D D
+A A A E D D
+A A A A D D
+F A D D D D

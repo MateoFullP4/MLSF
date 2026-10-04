@@ -1,0 +1,12 @@
+c grille generee : N=8 M=8 K=8 graine=1
+GRID 8 8
+ZONES A B C D E F G H
+
+A B B B B C C C
+A A B D D C C C
+E A A D D D C C
+E E E F D D D C
+E E E F D G G G
+E E E F F G G G
+E E E F F G G H
+E E E F H H H H

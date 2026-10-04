@@ -1,0 +1,10 @@
+c grille generee : N=6 M=6 K=6 graine=1
+GRID 6 6
+ZONES A B C D E F
+
+A A A A A B
+A A A C B B
+A A D C C C
+E A D C C C
+E E D F F F
+E E E F F F

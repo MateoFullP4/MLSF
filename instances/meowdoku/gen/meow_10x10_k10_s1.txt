@@ -1,0 +1,14 @@
+c grille generee : N=10 M=10 K=10 graine=1
+GRID 10 10
+ZONES A B C D E F G H I J
+
+A A B B B B B C C C
+A A A B B B D C C C
+E A E F F F D C C C
+E E E F F F D C C C
+E F F F F F C C C G
+E F F F F F F C C G
+E F F F F H H I I G
+J J J F F H H I I G
+J J J J H H H I I I
+J J J H H H H H H H

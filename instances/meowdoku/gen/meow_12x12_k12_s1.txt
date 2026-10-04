@@ -1,0 +1,16 @@
+c grille generee : N=12 M=12 K=12 graine=1
+GRID 12 12
+ZONES A B C D E F G H I J K L
+
+A A A A A A B B B B B B
+A A A A A A B B B B B B
+A C C D D E E E E E E F
+C C C C D E E E E E E F
+G H D D D D E E I I F F
+G H H D D D D I I F F F
+G H D D D D I I I I I F
+G H H I I I I I I I I F
+G H J J I I I I I I K K
+J H J J J I I I I I K K
+J J J J I I I L I K K K
+J J J J J L L L L K K K
