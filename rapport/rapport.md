@@ -486,6 +486,93 @@ python bench/plots.py q2                     # figures (matplotlib)
 
 ---
 
+## Question 3 – Résolution d'une grille
+
+### 3.1 Chaîne de traitement (`meowdoku/solve_grid.py`)
+
+```
+grille.txt --read_grid--> Grid --encode--> fichier .cnf --read_dimacs--> CNF
+           --solveur SAT--> modèle --decode--> {région: (i, j)} --verify--> solution.txt
+```
+
+1. La grille est lue et contrôlée (§1.1).
+2. Elle est encodée (§1.3), et **un vrai fichier DIMACS est écrit puis relu**. On
+   pourrait passer les clauses en mémoire, mais l'énoncé demande de déléguer la
+   recherche au solveur *via* la conversion en DIMACS, et ce passage teste au passage
+   l'écriture et la lecture du format. Le fichier est temporaire, sauf avec
+   `--cnf chemin`.
+3. Le solveur choisi (`--solver`) résout la formule. Par défaut, c'est l'algorithme 2.
+   Le registre `SOLVEURS` recevra les solveurs des questions 4 et 6. Le modèle est
+   revérifié contre la CNF, par prudence.
+4. **Décodage** : chaque littéral positif $x_v$ donne la case $(\lfloor (v-1)/M\rfloor+1,
+   (v-1)\bmod M+1)$, associée à sa région. `decode` lève une erreur si une région n'a
+   pas exactement un chat.
+5. **Vérification systématique, à deux niveaux.** La configuration décodée est
+   d'abord passée au vérificateur direct des règles (`verify.violations`). Puis le
+   **fichier produit lui-même** est relu depuis son texte (`check_solution_text`). Ce
+   second contrôle vérifie, en plus des règles, que le dictionnaire et la carte
+   décrivent la même configuration et que chaque chat est bien dans la région
+   annoncée. Une solution qui échoue n'est jamais écrite.
+6. **Sortie au format de la figure 2** : le fichier d'entrée est recopié *tel quel*
+   (commentaires compris), suivi du dictionnaire région → (ligne, colonne) dans l'ordre
+   de la ligne `ZONES`, puis de la carte en `*` et `.`. Pour la grille de l'énoncé, la
+   sortie est **identique** à la figure 2, ce que vérifie un test.
+
+Si la formule est insatisfiable, le programme le signale sur `stderr` et renvoie le
+code 2. Cela peut arriver pour une grille licite mais mal conçue, jamais pour une
+grille de notre générateur.
+
+### 3.2 Énumération et grilles à solution unique
+
+`count_solutions(grid, limite)` énumère les solutions par **clauses de blocage**. Après
+une solution $S$, on ajoute la clause $\bigvee_{(i,j)\in S}\neg x_{i,j}$, qui interdit
+exactement $S$ : toute autre configuration de $K$ chats laisse vide au moins une case
+de $S$.
+
+Cette fonction permet d'ajouter au générateur l'option **`--unique`**, annoncée en
+§1.5, par une **réparation itérative** de la grille plantée de solution $S_1$. Tant
+qu'il existe une autre solution $S_2$ :
+
+- on choisit une case $c$ portant un chat de $S_2$ mais pas de $S_1$. Il en existe
+  une, car $S_1 \ne S_2$ et elles ont toutes deux $K$ chats ;
+- on rattache $c$ à une région voisine $R'$, à condition que sa région d'origine reste
+  connexe sans elle.
+
+Dans $S_2$, la région $R'$ contient alors deux chats ($c$ et son chat d'origine), donc
+$S_2$ est éliminée. $S_1$ reste valide, car $c$ ne porte pas de chat de $S_1$ et aucun
+chat de $S_1$ ne change de région. Une retouche peut créer de nouvelles solutions, d'où
+l'itération, avec un nombre maximal d'étapes et un redémarrage en cas d'échec. En
+pratique, il faut 0 à 20 retouches jusqu'à 10×10. Le coût est dominé par la **preuve
+d'unicité**, qui revient à montrer qu'une formule est UNSAT. Avec le DPLL de base,
+cela prend moins de 4 s jusqu'à 9×9, mais environ 50 s pour 10×10, ce qui confirme le
+coût élevé des instances UNSAT observé au §2.5. Le solveur de la Question 6 pourra
+être branché ici (paramètre `solveur`).
+
+### 3.3 Validation (`tests/test_solve_grid.py`)
+
+- **Figure 2** : le programme, lancé en ligne de commande sur la grille de l'énoncé,
+  produit exactement le fichier de la figure 2.
+- **40 grilles générées** (de 4×4 à 9×9, et non carrées 5×7 avec K = 4, 8×6 avec
+  K = 5) : elles sont résolues, et chaque fichier solution est revérifié.
+- **Comptage contre énumération directe.** Avec $N=M=K$, une solution est une
+  permutation lignes → colonnes. On les teste toutes avec `verify`, sans SAT, et
+  l'ensemble obtenu doit coïncider avec celui énuméré par le solveur. C'est fait pour
+  18 grilles de 4×4 à 6×6. Le même oracle confirme l'unicité des grilles `--unique`
+  (5×5 à 7×7) ainsi que l'absence de solution d'une grille insoluble construite à la
+  main.
+- **Fichier falsifié** : un dictionnaire qui ne correspond pas à la carte, ou un chat
+  déplacé contre un autre, est détecté.
+
+```
+python meowdoku/solve_grid.py instances/meowdoku/grille1.txt              # sur stdout
+python meowdoku/solve_grid.py grille.txt -o solution.txt --cnf grille.cnf
+python meowdoku/verify.py solution.txt                                    # revérifier un fichier
+python meowdoku/generate.py 8 --unique --seed 3 -o grille8u.txt
+python tests/test_solve_grid.py
+```
+
+---
+
 ## Usage des assistants IA
 
 Le projet a été réalisé avec l'aide de Claude (Anthropic) dans l'éditeur, via
@@ -506,6 +593,9 @@ brute, vérificateur direct des règles du jeu).
   aussi proposé l'oracle MiniSat, l'outillage de validation et de mesure, et
   l'analyse des performances. Chaque chiffre cité provient des fichiers CSV de
   `bench/results/`.
+- **Q3** : chaîne de résolution, vérification à deux niveaux et génération à solution
+  unique proposées par l'assistant. La preuve que la réparation élimine $S_2$ sans
+  casser $S_1$ (§3.2) est à maîtriser pour la soutenance.
 
 ---
 
@@ -521,3 +611,5 @@ brute, vérificateur direct des règles du jeu).
 - **[Q2]** Les fichiers DIMACS des enseignants n'étant pas disponibles au moment de la
   rédaction, la validation porte sur SATLIB et nos instances. L'outil
   `tools/validate.py` s'appliquera tel quel à leurs fichiers.
+- **[Q3]** L'énoncé suppose qu'une solution existe. Si ce n'est pas le cas, le
+  programme le signale (code de retour 2) au lieu d'écrire un fichier.

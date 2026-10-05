@@ -2,6 +2,7 @@
 
     python meowdoku/generate.py N [M K] [--seed S] [-o grille.txt]
     python meowdoku/generate.py N [M K] --count C --dir DOSSIER [--seed S] [--cnf]
+    python meowdoku/generate.py N [--unique] ...      (solution unique, Question 3)
 
 Méthode : « solution plantée »
 ------------------------------
@@ -33,8 +34,9 @@ Le cas général N × M avec K ≤ min(N, M) régions est traité ; le cas
 N = M = K est celui du jeu usuel. Pour N = M = K ∈ {2, 3}, aucune
 configuration valide n'existe (deux chats de lignes consécutives devraient
 être à distance ≥ 2 en colonne) : le générateur le signale.
-La grille produite n'a pas forcément une solution UNIQUE (voir l'option
---unique ajoutée à la Question 3).
+La grille produite n'a pas forcément une solution UNIQUE. L'option
+--unique (ajoutée à la Question 3, car elle utilise le solveur) retouche
+les régions jusqu'à l'unicité : voir make_unique.
 """
 
 import argparse
@@ -157,6 +159,74 @@ def generate(n, m=None, k=None, rng=None, seed=None):
     return Grid(n, m, noms, regions, commentaires), plantee
 
 
+def _connexe_sans(grid, z, case):
+    """La région z privée de `case` est-elle encore connexe (4-voisinage) ?"""
+    cases = set(grid.cells_of()[z]) - {case}
+    if not cases:
+        return False
+    depart = next(iter(cases))
+    vus, pile = {depart}, [depart]
+    while pile:
+        i, j = pile.pop()
+        for c in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+            if c in cases and c not in vus:
+                vus.add(c)
+                pile.append(c)
+    return vus == cases
+
+
+def make_unique(grid, plantee, rng, solveur="dpll", max_iter=None):
+    """Retouche les régions jusqu'à ce que la solution plantée soit la SEULE.
+
+    (Ajout de la Question 3 : nécessite le solveur.)
+    Tant qu'il existe une autre solution S2 ≠ S1 (S1 = solution plantée) :
+      - on choisit une case c portant un chat de S2 mais pas de S1 (il en
+        existe : S1 et S2 ont K chats chacune et sont différentes) ;
+      - on rattache c à une région voisine R' (4-voisinage), à condition que
+        sa région R reste connexe sans elle.
+    Effet : dans S2, R' contient alors deux chats (c et son chat d'origine),
+    donc S2 n'est plus une solution ; S1 reste valide car c ne porte pas de
+    chat de S1 et aucun chat de S1 ne change de région. Le déplacement peut
+    créer de nouvelles solutions : on recommence, avec un nombre maximal
+    d'itérations. Renvoie le nombre de retouches, ou None en cas d'échec.
+    """
+    from meowdoku.solve_grid import count_solutions
+    s1 = set(plantee.values())
+    max_iter = max_iter or 5 * grid.n * grid.m
+    for it in range(max_iter + 1):
+        autres = [s for s in count_solutions(grid, 2, solveur, seed=it)
+                  if set(s.values()) != s1]
+        if not autres:
+            return it
+        candidates = [c for c in autres[0].values() if c not in s1]
+        rng.shuffle(candidates)
+        for (i, j) in candidates:
+            r = grid.regions[i - 1][j - 1]
+            voisines = sorted({grid.regions[a - 1][b - 1]
+                               for a, b in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1))
+                               if 1 <= a <= grid.n and 1 <= b <= grid.m} - {r})
+            if voisines and _connexe_sans(grid, r, (i, j)):
+                grid.regions[i - 1][j - 1] = rng.choice(voisines)
+                break
+        else:
+            return None                      # aucune retouche possible
+    return None
+
+
+def generate_unique(n, m=None, k=None, seed=None, solveur="dpll", essais=20):
+    """Grille à solution unique : génération puis retouches (make_unique)."""
+    rng = random.Random(seed)
+    for _ in range(essais):
+        grid, plantee = generate(n, m, k, rng=rng)
+        retouches = make_unique(grid, plantee, rng, solveur)
+        if retouches is not None:
+            grid.comments = [f"grille generee a solution unique : N={grid.n} M={grid.m} "
+                             f"K={grid.k}" + (f" graine={seed}" if seed is not None else "")
+                             + f" ({retouches} retouches)"]
+            return grid, plantee
+    raise GenerationError("échec de la génération d'une grille à solution unique")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Générateur de grilles Meowdoku (solution plantée)")
     ap.add_argument("dims", type=int, nargs="+", metavar="N [M K]",
@@ -166,6 +236,8 @@ def main(argv=None):
     ap.add_argument("--count", type=int, default=1, help="nombre de grilles à produire")
     ap.add_argument("--dir", default=".", help="dossier de sortie pour --count")
     ap.add_argument("--cnf", action="store_true", help="écrire aussi l'encodage DIMACS")
+    ap.add_argument("--unique", action="store_true",
+                    help="retoucher la grille pour que sa solution soit unique (utilise le solveur)")
     args = ap.parse_args(argv)
 
     if len(args.dims) == 1:
@@ -179,14 +251,18 @@ def main(argv=None):
     for t in range(args.count):
         graine = graine0 + t
         try:
-            grid, _ = generate(n, m, k, seed=graine)
+            if args.unique:
+                grid, _ = generate_unique(n, m, k, seed=graine)
+            else:
+                grid, _ = generate(n, m, k, seed=graine)
         except GenerationError as e:
             sys.exit(f"erreur : {e}")
         if args.output and args.count == 1:
             chemin = args.output
         else:
             os.makedirs(args.dir, exist_ok=True)
-            chemin = os.path.join(args.dir, f"meow_{n}x{m}_k{k}_s{graine}.txt")
+            suffixe = "_u" if args.unique else ""
+            chemin = os.path.join(args.dir, f"meow_{n}x{m}_k{k}_s{graine}{suffixe}.txt")
         write_grid(chemin, grid)
         if args.cnf:
             from meowdoku.encode import encode, dimacs_comments
