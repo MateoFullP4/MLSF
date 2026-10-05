@@ -1,0 +1,4 @@
+# Outils de DÉVELOPPEMENT uniquement : les solveurs n'utilisent que la
+# bibliothèque standard (environnement de compétition python:3.12-slim).
+python-sat      # oracle MiniSat : tools/oracle.py -> instances/expected.csv
+matplotlib      # figures du rapport : bench/plots.py

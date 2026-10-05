@@ -1,6 +1,6 @@
 # Projet MLSF – Un solveur SAT pour Meowdoku – Partie I
 
-*Rapport — binôme : Mateo Weill, (à compléter) — octobre 2026*
+*Rapport — binôme : Mateo Weill, Antoine Loudier — octobre 2026*
 
 ## Organisation du rendu
 
@@ -30,7 +30,7 @@ Conventions communes à tout le code :
 
 - **Python 3.12, bibliothèque standard uniquement** : c'est l'environnement de la
   compétition (`python:3.12-slim`), dans lequel on ne peut pas compter sur numpy ou
-  autre paquet externe. Les tests passent aussi en 3.13.
+  autre paquet externe. Les tests sont exécutés sous Python 3.13 et 3.12 (3.12.15, obtenu avec `uv run --python 3.12`).
 - Une **formule CNF** est une liste de clauses ; une **clause** est un `frozenset`
   d'entiers non nuls ; le littéral `k` représente $x_k$ et `-k` représente
   $\neg x_k$ (comme dans DIMACS). La justification est donnée en Question 2.
@@ -234,6 +234,258 @@ python tests/test_meowdoku.py
 
 ---
 
+## Question 2 – Lecture DIMACS et algorithme DPLL
+
+### 2.1 Structure de données des formules
+
+| Objet | Représentation Python |
+|---|---|
+| littéral $x_k$ / $\neg x_k$ | entier `k` / `-k` (comme DIMACS : aucune conversion) |
+| clause | `frozenset` de littéraux |
+| formule CNF | `list` de clauses |
+| valuation | `set` de littéraux (`3` : $x_3 \leftarrow 1$, `-3` : $x_3 \leftarrow 0$) |
+
+On a choisi le **`frozenset`** pour trois raisons. Le test « $l \in C$ », au cœur de
+$F[l \leftarrow 1]$, se fait en temps constant. Les doublons d'une clause
+(`1 1 2 0`) disparaissent d'eux-mêmes. Enfin, l'immuabilité permet de **partager**
+sans risque les clauses non modifiées entre une formule et sa simplification :
+$F[l\leftarrow 1]$ ne recopie que les clauses qui perdent $\neg l$, les autres sont
+les mêmes objets. Une clause tautologique (`1 -1 0`) est conservée telle quelle :
+elle disparaît dès que sa variable est affectée, et elle empêche à juste titre $x_1$
+d'être vue comme un littéral pur.
+
+Ce choix privilégie la **lisibilité et la correspondance avec l'énoncé**, où
+$F[l\leftarrow b]$ est une nouvelle formule. Les structures plus efficaces (affectation
+en place, littéraux surveillés) sont étudiées en Question 6.
+
+### 2.2 Lecteur DIMACS (`solver/dimacs.py`)
+
+La lecture standard traite les entiers comme un **flux** : chaque `0` ferme une
+clause, quelles que soient les fins de ligne. On accepte ainsi les clauses sur
+plusieurs lignes ou plusieurs clauses par ligne, qui sont courantes dans les
+benchmarks. Les lignes `c` sont ignorées, et un `%` isolé, qui marque la fin des
+fichiers SATLIB, arrête la lecture. Un en-tête absent ou invalide, un jeton non
+entier ou une variable supérieure au nombre annoncé lèvent une `DimacsError`.
+
+**Fichiers mal formés réels.** En validant sur SATLIB (§2.4), deux défauts sont
+apparus, que le premier lecteur traitait **incorrectement** :
+
+- les 8 fichiers `pret*.cnf` se terminent par un `0` isolé. Lu comme une clause
+  vide, il rend *n'importe quelle* formule insatisfiable. C'est sans conséquence
+  visible ici, car ces formules sont effectivement UNSAT, mais ce serait faux pour
+  une formule SAT ;
+- dans `dubois100.cnf`, certaines lignes n'ont pas de `0` final. La lecture en flux
+  fusionne alors deux clauses en une seule clause de 6 littéraux, ce qui
+  **affaiblit** la formule. On lisait 598 clauses au lieu des 800 annoncées.
+
+Le nombre de clauses annoncé dans l'en-tête sert donc de contrôle. En cas d'écart,
+le lecteur ignore d'abord les clauses vides en surnombre en fin de fichier. Si l'écart
+persiste, il essaie une lecture **ligne par ligne** (une ligne = une clause, comme le
+dit l'énoncé), et ne la retient que si elle donne exactement le nombre annoncé.
+Toute correction est signalée sur `stderr`. Une vraie clause vide, comptée dans
+l'en-tête, est conservée. Ces cas sont couverts par `test_parseur_robuste`.
+
+### 2.3 Algorithmes 1 et 2 (`solver/dpll.py`)
+
+`dpll_v1` et `dpll_v2` suivent l'énoncé ligne à ligne, et les numéros de ligne sont
+indiqués en commentaire dans le code. Les opérations élémentaires sont les suivantes :
+
+| Fonction | Rôle | Coût |
+|---|---|---|
+| `simplify(F, l)` | $F[l\leftarrow 1]$ : retire les clauses contenant $l$, retire $\neg l$ des autres | $O(\lvert F\rvert)$ |
+| `has_empty_clause` | ligne 1 | $O(m)$ |
+| `find_unit` | ligne 5 : première clause de taille 1 | $O(m)$ |
+| `find_pure` | ligne 7 : union des littéraux, puis recherche d'un $l$ sans $\neg l$ | $O(\lvert F\rvert)$ |
+| `random_choice` | ligne 9 / `RandomChoice` : variable uniforme parmi celles de $F$, valeur uniforme | $O(\lvert F\rvert)$ |
+
+Ici $m$ est le nombre de clauses et $|F|$ le nombre total d'occurrences de littéraux.
+
+Choix et précisions :
+
+- **Retour de l'algorithme 2.** On renvoie `(True, v)` ou `(False, None)`, ce qui
+  correspond au $(\mathrm{UNSAT}, 0)$ de l'énoncé. La valuation est construite **à la
+  remontée** : $v \cup \{l\}$ est un simple `add` sur l'ensemble renvoyé par l'appel
+  récursif. Il n'y a donc pas de copie, et le coût n'est payé que sur la branche
+  gagnante.
+- **Unitaire et pur.** Les deux cas ont un traitement identique dans l'algorithme 2
+  (lignes 5-10 et 11-16 : une seule branche, sans retour arrière). Le code les
+  factorise, en essayant d'abord le littéral unitaire.
+- **Modèle complet.** Une variable peut disparaître de $F$ sans être affectée, quand
+  toutes ses clauses sont déjà satisfaites. Elle peut alors prendre n'importe quelle
+  valeur, et `complete_model` lui donne la valeur faux, pour produire un modèle sur
+  $x_1..x_n$, comme le demande la Question 6.
+- **Hasard reproductible.** `random_choice` tire avec un `random.Random(seed)` et trie
+  les variables avant le tirage, car l'ordre d'itération d'un `set` n'est pas une
+  fonction de la graine. Une exécution est donc entièrement déterminée par sa graine.
+- **Profondeur de récursion.** Chaque appel affecte au moins une variable présente
+  dans $F$, qui en disparaît. La profondeur est donc au plus $n+1$, et `solve` relève
+  la limite de Python, qui vaut 1000 par défaut. C'est testé avec une chaîne de 3000
+  implications.
+
+*Correction.* La **terminaison** découle de ce que chaque appel retire au moins une
+variable. Pour la **correction**, on utilise trois faits :
+
+1. si $\{l\}\in F$, toute valuation qui satisfait $F$ rend $l$ vrai, donc $F$ est
+   satisfiable si et seulement si $F[l\leftarrow 1]$ l'est ;
+2. si $l$ est pur, et si $v \models F$, alors $v[l\leftarrow 1] \models F$, car rendre
+   $l$ vrai ne peut falsifier aucune clause, puisque $\neg l$ n'apparaît nulle part ;
+   donc $F$ est satisfiable si et seulement si $F[l\leftarrow 1]$ l'est ;
+3. $F$ est satisfiable si et seulement si $F[p\leftarrow b]$ ou
+   $F[p\leftarrow \bar b]$ l'est.
+
+Par récurrence sur le nombre de variables, la valuation renvoyée satisfait $F$, et
+de plus elle est vérifiée systématiquement.
+
+### 2.4 Validation
+
+Les fichiers des enseignants n'étant pas encore disponibles, la validation repose sur
+trois niveaux. Le même outillage s'appliquera tel quel à leurs fichiers
+(`python tools/validate.py <dossier>`).
+
+1. **Tests unitaires et oracle de force brute** (`tests/test_dpll.py`) : opérations
+   élémentaires sur l'exemple de l'énoncé, cas limites (formule vide, clause vide,
+   $x\wedge\neg x$, tautologie), lecteur, puis **600 formules aléatoires** de 3 à 12
+   variables (343 SAT, 257 UNSAT). Ces formules sont résolues par les deux algorithmes
+   avec 3 graines chacune, et comparées à l'énumération des $2^n$ valuations. Chaque
+   modèle est vérifié.
+2. **Instances de référence.** On a ajouté **162 instances SATLIB** (`instances/satlib/`),
+   la bibliothèque de référence d'où proviennent la plupart des jeux de test de
+   DPLL :
+   - 3-SAT aléatoire `uf`/`uuf` de 20 à 100 variables ;
+   - coloration de graphes `flat` ;
+   - tiroirs `hole` ;
+   - `aim`, `dubois`, `pret`, `par`.
+
+   S'y ajoutent nos instances : lampes, Meowdoku, `rand3sat` et `php` produits par
+   `tools/gen_cnf.py`. Le **statut attendu** est calculé par un solveur de référence
+   indépendant, MiniSat 2.2, via `python-sat` utilisé comme *outil de développement
+   uniquement*. Il est enregistré dans `instances/expected.csv`
+   (`tools/oracle.py`) et confronté au statut annoncé par SATLIB : il n'y a aucune
+   discordance.
+3. **Validation automatique** (`tools/validate.py`) : chaque instance est résolue
+   dans un sous-processus avec un délai de 60 s. Le statut est comparé à l'oracle, et
+   chaque modèle est vérifié contre **toutes** les clauses.
+
+**Résultat : aucune réponse fausse.** Sur 181 instances × 2 algorithmes, il y a 254
+réponses justes et 108 délais dépassés. Détail par famille, identique pour les deux
+algorithmes (le détail complet est dans `bench/results/q2_validation.md`) :
+
+| Famille | Statut | Instances | Résolues en 60 s | Temps moyen (s) |
+|---|---|---|---|---|
+| lampes, grille 1, Meowdoku générées 6 à 12 | SAT | 6 | 6 | ≤ 0,15 |
+| uf20 / uf50 / uf75 / uf100 | SAT | 20 / 10 / 5 / 5 | toutes | 0,002 / 0,14 / 1,7 / 26 |
+| uuf50 / uuf75 / uuf100 | UNSAT | 10 / 5 / 5 | 10 / 5 / **1** | 0,42 / 8,7 / 55 |
+| rand3sat (nos 3-SAT, n = 20, 50, 75) | les deux | 9 | 9 | ≤ 4,8 |
+| php (nos tiroirs, 3 à 6 trous) | UNSAT | 4 | 4 | 0,05 |
+| hole6 à hole10 | UNSAT | 5 | 3 (6 à 8) | 2,6 |
+| flat30 / flat50 | SAT | 5 / 3 | toutes | 0,006 / 0,64 |
+| aim-50 | les deux | 24 | 24 | ≤ 9 |
+| aim-100 | les deux | 24 | **7** | ≤ 14 |
+| par8 / par16 | SAT | 10 / 10 | 10 / **0** | 0,2 / – |
+| dubois (60 à 300 var.) | UNSAT | 13 | **0** | – |
+| pret (60 et 150 var.) | UNSAT | 8 | **0** | – |
+
+### 2.5 Performances
+
+**Coût d'un nœud.** Chaque appel récursif fait plusieurs parcours complets de la
+formule courante (clause vide, unitaire, pur, simplification), soit $O(|F|)$ par
+nœud. Il garde aussi sa propre copie simplifiée de $F$ tant que ses descendants
+s'exécutent, soit une mémoire en $O(n\cdot|F|)$ au pire. Le nombre de nœuds est
+exponentiel dans le pire cas, en $O(2^n)$. Le **profilage** de l'algorithme 2 sur
+`uuf50-01` (7 147 appels, 1,7 s, soit environ 240 µs par nœud) donne la répartition
+suivante :
+
+| Poste | Part du temps |
+|---|---|
+| recherche de la clause vide (`has_empty_clause`, un parcours complet à chaque appel) | ≈ 40 % |
+| simplification $F[l\leftarrow 1]$ | ≈ 35 % |
+| choix de variable (`variables`) et clause unitaire | ≈ 20 % |
+
+Ce sont des coûts **structurels**. Le nombre de nœuds est inévitable sans meilleure
+heuristique (Question 4), mais le coût par nœud tomberait si l'on détectait la clause
+vide pendant la simplification, et surtout si l'on affectait en place au lieu de
+recopier (Question 6).
+
+Les mesures (`bench/bench_q2.py`, résultats dans `bench/results/q2_*.csv`) sont prises
+en sous-processus, le temps de lecture du fichier étant exclu.
+
+**Transition de phase** (3-SAT aléatoire, n = 30, 30 formules par ratio m/n) :
+
+![Transition de phase](figures/q2_phase.png)
+
+La proportion de formules SAT passe de 100 % à 0 % autour de $m/n \approx 4{,}26$, le
+seuil connu du 3-SAT aléatoire. Le temps est maximal autour de ce seuil, et c'est
+**conforme à l'intuition**. En dessous, il y a peu de contraintes et une solution est
+trouvée presque sans retour arrière. Au-dessus, il y a tant de contraintes que les
+propagations unitaires referment vite chaque branche. Pour n = 30, la décroissance à
+droite reste modeste ; elle s'accentue avec n.
+
+**Croissance avec n** (au seuil m = 4,26 n, 20 formules par taille, médianes) :
+
+![Croissance avec n](figures/q2_taille.png)
+
+| n | 40 | 50 | 60 | 70 | 80 |
+|---|---|---|---|---|---|
+| SAT, médiane (s) | 0,045 | 0,062 | 0,51 | 2,3 | 5,1 |
+| UNSAT, médiane (s) | 0,17 | 0,51 | 1,8 | 7,1 | 18,8 |
+
+- **Croissance exponentielle** : le temps des instances UNSAT est multiplié par environ
+  3,3 pour 10 variables de plus, soit environ $2^{n/5,8}$. Avec la limite de 60 s de la
+  compétition, le DPLL de base plafonne vers n ≈ 90 sur ce type d'instances : uuf100
+  n'est résolu qu'une fois sur 5.
+- **UNSAT est plus coûteux que SAT**, d'un facteur 3 à 8 pour un même n. Pour prouver
+  l'insatisfiabilité, il faut parcourir **tout** l'arbre de recherche, alors qu'une
+  formule SAT s'arrête à la première feuille satisfaisante. Les temps SAT sont aussi
+  plus dispersés (rapport max/médiane plus élevé), car tout dépend du moment où l'on
+  tombe sur une bonne branche.
+- **Algorithmes 1 et 2 : même coût.** Le rapport médian des temps est de 1,007 (de 0,88
+  à 1,43 selon l'instance, ce qui relève du bruit de mesure). C'est attendu : avec la
+  même graine, les deux algorithmes appellent `random_choice` dans le même ordre sur
+  les mêmes formules, et parcourent donc **exactement le même arbre**. Le seul surcoût
+  de l'algorithme 2 est un `add` par niveau sur la branche gagnante, négligeable
+  devant le $O(|F|)$ de chaque nœud.
+
+**Effet du hasard** (20 graines sur une même instance) :
+
+| Instance | min | médiane | max | max / min |
+|---|---|---|---|---|
+| uf50-01 (SAT) | 0,007 | 0,33 | 0,76 | ×110 |
+| uuf50-01 (UNSAT) | 0,31 | 0,48 | 0,79 | ×3 |
+| flat30-1 (SAT) | 0,007 | 0,015 | 0,093 | ×13 |
+| Meowdoku 10×10 (SAT) | 0,028 | 0,051 | 0,63 | ×22 |
+
+Sur une instance SAT, une graine chanceuse trouve la solution presque sans retour
+arrière, ce qui donne un facteur 110 entre la meilleure et la pire graine. Sur une
+instance UNSAT, tout l'arbre doit être exploré et le hasard ne change que sa forme :
+facteur 3 seulement.
+
+**Instances structurées.**
+
+- **Tiroirs** : 0,2 s pour hole6, 1,7 s pour hole7, 12,5 s pour hole8, puis
+  dépassement du délai. Le facteur d'environ 8 par trou supplémentaire illustre un
+  résultat théorique : toute preuve par résolution du principe des tiroirs, donc
+  toute exécution de DPLL, est de taille exponentielle (Haken, 1985). Aucune
+  heuristique de branchement ne peut l'éviter.
+- **dubois, pret, par16** : elles ne sont jamais résolues en 60 s, bien qu'elles
+  n'aient que 60 à 300 variables. Ces formules encodent des chaînes de contraintes de
+  parité (XOR). Sans apprentissage de clauses, DPLL redécouvre indéfiniment les mêmes
+  conflits dans des branches différentes. Cela motive les techniques de la Question 6.
+- **Meowdoku** (grilles générées, 3 graines de grille × 3 graines de solveur) : moins
+  de 0,2 s jusqu'à 13×13 dans la grande majorité des cas, mais avec une **queue
+  lourde**. Sur une même grille 14×14, on observe 0,2 s, 17 s ou plus de 60 s selon la
+  graine du solveur. Le choix aléatoire de la variable est donc le point faible pour
+  notre application : c'est l'objet de la Question 4.
+
+```
+python tests/test_dpll.py
+python tools/oracle.py                       # recalcule instances/expected.csv (python-sat)
+python tools/validate.py [dossier] --timeout 60 --csv bench/results/q2_validation.csv
+python bench/bench_q2.py tout                # mesures (≈ 20 min)
+python bench/plots.py q2                     # figures (matplotlib)
+```
+
+---
+
 ## Usage des assistants IA
 
 Le projet a été réalisé avec l'aide de Claude (Anthropic) dans l'éditeur, via
@@ -248,3 +500,24 @@ brute, vérificateur direct des règles du jeu).
 - **Q1** : proposition de l'encodage et du générateur par l'assistant ; la
   validation repose sur le test d'équivalence exhaustive (§1.4), qui ne dépend
   d'aucune hypothèse sur le code d'encodage.
+- **Q2** : les algorithmes 1 et 2 et le lecteur DIMACS avaient été écrits en amont. La
+  relecture et la validation avec l'assistant ont mis en évidence deux défauts du
+  lecteur sur des fichiers SATLIB réels (§2.2), qui ont été corrigés. L'assistant a
+  aussi proposé l'oracle MiniSat, l'outillage de validation et de mesure, et
+  l'analyse des performances. Chaque chiffre cité provient des fichiers CSV de
+  `bench/results/`.
+
+---
+
+## Écarts à l'énoncé et points d'interprétation
+
+- **[Q1]** `GRID N M` est lu comme N lignes, M colonnes (§1.1). Une ligne de
+  commentaire est une ligne dont le premier mot est `c`.
+- **[Q1]** Encodage sans variable auxiliaire, comme demandé, avec une option
+  `--extra` de clauses redondantes, désactivée par défaut.
+- **[Q2]** Le lecteur DIMACS tolère deux défauts présents dans des fichiers SATLIB
+  réels (§2.2). Pour un fichier bien formé, il se comporte exactement comme la lecture
+  standard.
+- **[Q2]** Les fichiers DIMACS des enseignants n'étant pas disponibles au moment de la
+  rédaction, la validation porte sur SATLIB et nos instances. L'outil
+  `tools/validate.py` s'appliquera tel quel à leurs fichiers.

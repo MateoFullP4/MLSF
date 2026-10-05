@@ -20,3 +20,6 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Instances de mesure regenerees par les scripts
+bench/work/
