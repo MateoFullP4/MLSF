@@ -573,6 +573,177 @@ python tests/test_solve_grid.py
 
 ---
 
+## Question 4 – Heuristiques de branchement
+
+### 4.1 DPLL_H (`solver/dpllh.py`)
+
+`dpllh(F, h, stats)` reprend l'algorithme 2 à l'identique, avec les mêmes fonctions
+`simplify`, `find_unit`, `find_pure`, etc. Seule la ligne 17 change :
+`RandomChoice(F)` devient `h.choose(F)`. Une heuristique est un objet doté de deux
+méthodes :
+
+- `prepare(F)`, appelée **une fois** sur la formule initiale. Elle sert au
+  pré-traitement des versions statiques.
+- `choose(F)`, appelée à **chaque décision** sur la formule courante. Elle renvoie
+  un littéral $l$ : brancher sur $l$ signifie essayer d'abord $p\leftarrow 1$ si
+  $l=p$, et $p\leftarrow 0$ si $l=\neg p$.
+
+L'exécution est **instrumentée dès maintenant** (`solver/stats.py`). On compte les
+décisions (ligne 17), les retours arrière (ligne 21), les propagations unitaires
+(ligne 5), les littéraux purs (ligne 11), les nœuds et la profondeur maximale. On
+mesure aussi le temps passé dans `prepare` et `choose`. Ces compteurs servent à la
+Question 5. Ils ne coûtent que quelques incréments par nœud et deux lectures
+d'horloge par décision, soit environ 0,1 µs, à comparer aux quelque 100 µs d'un nœud.
+
+### 4.2 Heuristiques implémentées : les 14 variantes
+
+Nous avons implémenté **toutes** les heuristiques de l'énoncé, H0, H1, puis H2 à
+H7 en versions statique ($H_i^s$) et dynamique ($H_i^d$), soit 14 variantes. Le
+minimum demandé était de 4. Ce choix ne coûte presque rien grâce à la construction
+générique décrite ci-dessous. Il permet surtout de répondre **par la mesure** aux
+questions de la Question 5, au lieu de s'appuyer sur l'intuition :
+
+- choisir une variable ou un littéral ;
+- tenir compte ou non de la taille des clauses ;
+- recalculer à chaque décision (dynamique) ou non (statique).
+
+Les contraintes de l'énoncé sont satisfaites : H3, H5 et H7 sélectionnent un
+littéral ; H4 à H7 tiennent compte de la taille des clauses ; les $H_i^d$ sont
+dynamiques.
+
+**Construction générique.** H2 à H7 se décrivent par deux choix indépendants, et
+chacune est un couple (mesure, mode) dans `solver/heuristics.py` :
+
+| | mode **var** : variable $p$ maximisant $s(p)+s(\neg p)$, polarité majoritaire | mode **lit** : littéral $l$ maximisant $s(l)$ |
+|---|---|---|
+| mesure **occ** : $s(l)=occ(l,F)$ | H2 VPPM | H3 LP |
+| mesure **occmin** : $s(l)=occ_k(l,F)$, $k=\min_C\lvert C\rvert$ | H4 VFCM (MOMS) | H5 LFCM |
+| mesure **jw** : $s(l)=J(l)=\sum_{C\ni l}2^{-\lvert C\rvert}$ | H6 VJW | H7 LJW |
+
+On a bien $s(p)+s(\neg p)$ égal à $\#(p,F)$, $\#_k(p,F)$ ou
+$\sum_k \#_k(p,F)\,2^{-k}$ selon la mesure, et la polarité « 1 si $s(p)\ge s(\neg p)$ »
+redonne exactement les règles de l'énoncé : $\#^+\ge\#^-$, $\#^+_k\ge\#^-_k$, et la
+comparaison des sommes pondérées. Ainsi, chaque heuristique est une combinaison
+lisible d'une mesure et d'un mode, et le code d'une mesure ou d'un mode n'est écrit
+qu'une fois.
+
+- **Dynamique** : la mesure est recalculée sur la formule courante à chaque
+  décision, en $O(|F|)$. Les comptages utilisent `collections.Counter` sur
+  `itertools.chain`, dont la boucle est exécutée en C.
+- **Statique** : la mesure est calculée une seule fois sur la formule initiale. Elle
+  fixe un **ordre de préférence** sur tous les littéraux. Une décision prend le
+  premier littéral de cet ordre dont la variable apparaît encore dans $F$.
+- **H0** appelle exactement `RandomChoice` (`random_choice` de l'algorithme 2).
+  **H1** prend la plus petite variable présente dans $F$, avec la valeur 1.
+
+**Conventions.**
+
+- *Variable non affectée* signifie *variable présente dans la formule courante*.
+  Dans notre DPLL par réécriture, une variable affectée disparaît de $F$. Une
+  variable absente de $F$ mais non affectée, parce que toutes ses clauses sont
+  satisfaites, n'a aucune influence : brancher dessus serait inutile.
+- *Départage* : à score égal, on prend la plus petite variable, puis le littéral
+  positif. Ce choix rend toutes les heuristiques déterministes, sauf H0.
+- *Statiques H4 et H5* : la mesure ne voit que les clauses de taille minimale de la
+  formule **initiale**. Si celle-ci contient des clauses unitaires, seules leurs
+  variables, aussitôt propagées, ont un score non nul, et le reste de l'ordre se
+  réduit au départage par numéro. $H_4^s$ et $H_5^s$ dégénèrent alors en H1 :
+  c'est une faiblesse intrinsèque de la version statique de ces heuristiques. Un
+  test a révélé que la première version du code omettait purement et simplement ces
+  variables de l'ordre statique ; c'est corrigé, et l'ordre couvre désormais tous
+  les littéraux.
+
+**Coût d'une décision.**
+
+| | coût par décision | pré-traitement |
+|---|---|---|
+| H0, H1 | $O(\lvert F\rvert)$ (variables présentes) | – |
+| $H_i^d$ | $O(\lvert F\rvert)$ (comptage) + $O(\#\text{littéraux})$ (maximum) | – |
+| $H_i^s$ | $O(\lvert F\rvert)$ (variables présentes) + parcours de l'ordre | $O(\lvert F\rvert + n\log n)$ |
+
+Dans notre implémentation par réécriture, une heuristique statique reste en
+$O(|F|)$ par décision, car il faut savoir quelles variables sont encore présentes.
+Son gain sur la version dynamique n'est donc qu'un **facteur constant** : on évite le
+comptage et le calcul des scores. Avec une affectation en place (Question 6), la
+présence d'une variable se teste en $O(1)$ et la version statique devient
+quasiment gratuite.
+
+### 4.3 Pourquoi ces heuristiques : intuitions
+
+- **H0** (aléatoire) est la référence. Elle n'exploite aucune information, et la
+  Question 2 a montré sa forte variance.
+- **H1** (première variable libre) est la moins coûteuse. Elle exploite la
+  numérotation, ce qui est pertinent quand celle-ci reflète une structure. Pour
+  Meowdoku, la numérotation suit l'ordre de lecture des cases : H1 revient à
+  « placer un chat sur la première case libre ». Avec les propagations qui
+  éliminent ensuite la ligne, la colonne et les voisins, c'est le retour arrière
+  naturel ligne par ligne.
+- **H2 et H3** (fréquence) : affecter la variable la plus fréquente simplifie le plus
+  de clauses. C'est une heuristique « gloutonne » de réduction de la formule.
+- **H4 et H5** (MOMS) : les clauses les plus courtes sont les plus proches de devenir
+  unitaires. Les réduire déclenche des propagations, donc élague tôt les branches
+  vouées à l'échec.
+- **H6 et H7** (Jeroslow-Wang) combinent les deux idées précédentes. Chaque
+  occurrence compte, mais une occurrence dans une clause de taille $k$ pèse
+  $2^{-k}$, c'est-à-dire la proportion de valuations que cette clause interdit.
+  $J(l)$ mesure donc approximativement la « part de contraintes » que l'on satisfait
+  en rendant $l$ vrai.
+- **Variable ou littéral.** Le mode *var* choisit la variable la plus contrainte au
+  total, puis la polarité majoritaire. Le mode *lit* mise directement sur le
+  littéral le plus « utile » à rendre vrai.
+- **Statique ou dynamique** (Question 5) : une version dynamique suit l'évolution de
+  la formule, au prix d'un recomptage à chaque décision.
+
+**Remarque propre à Meowdoku.** Dans l'encodage, l'immense majorité des clauses est
+binaire **négative** ($\neg x\vee\neg y$). Les mesures comptent donc surtout des
+littéraux négatifs, et la polarité majoritaire choisit presque toujours
+$x_{i,j}\leftarrow 0$, c'est-à-dire « pas de chat ici ». Or cette décision propage
+peu, alors que $x_{i,j}\leftarrow 1$ fait tomber d'un coup toute la ligne, la
+colonne, la région et les voisins. On s'attend donc à ce que les choix de polarité
+de l'énoncé soient peu adaptés à Meowdoku. C'est à vérifier en Question 5 et à
+exploiter en Question 6.
+
+### 4.4 Validation
+
+Les tests (`tests/test_heuristics.py`) vérifient les points suivants :
+
+1. **Calculs à la main** sur la formule d'exemple de l'énoncé, détaillés en
+   commentaire dans le test. Les mesures retrouvent les valeurs de l'énoncé
+   ($\#(x_2)=3$, $\sum_k\#_k(x_2)2^{-k}=7/16$, etc.), et le choix de chacune des 14
+   variantes est celui calculé à la main : par exemple, H6 choisit $x_2\leftarrow 1$,
+   comme dans l'énoncé.
+2. **H0 et l'algorithme 2.** Avec la même graine, `dpllh` avec H0 et `dpll_v2`
+   renvoient **la même valuation** sur 300 exécutions. Elles parcourent le même
+   arbre, donc DPLL_H généralise bien l'algorithme 2.
+3. **Conformité.** Sur 400 formules aléatoires (2-, 3- et 4-SAT, avec des clauses
+   unitaires ; 310 SAT et 90 UNSAT), les 14 heuristiques donnent toutes le statut de
+   la force brute, et chaque modèle est vérifié.
+4. **Cohérence des compteurs.** Sur une instance UNSAT, chaque décision est suivie
+   d'un retour arrière, et l'on a
+   $\text{nœuds} = 1 + 2\cdot\text{décisions} + \text{unitaires} + \text{purs}$.
+5. **Données de la Question 2.** `tools/validate.py` est relancé avec les 14
+   heuristiques sur les 181 instances, avec un délai de 10 s. Sur les 2 534
+   exécutions, il n'y a **aucune réponse fausse** : tous les statuts sont conformes à
+   l'oracle, et tous les modèles sont vérifiés. Le reste correspond à des délais
+   dépassés, dont le nombre donne un premier aperçu, à affiner en Question 5 :
+
+   | heuristique | H6d | H4d | H7d | H5d | H3d | H2d, H2s | H6s | H3s, H4s, H7s | H5s | H1 | H0 |
+   |---|---|---|---|---|---|---|---|---|---|---|---|
+   | instances résolues en 10 s (sur 181) | 139 | 137 | 136 | 135 | 131 | 130 | 129 | 126 | 123 | 117 | 116 |
+
+   Toutes les heuristiques font mieux que le choix aléatoire, et les versions
+   dynamiques précèdent les statiques. Le détail par famille est dans
+   `bench/results/q4_validation.md`.
+
+```
+python tests/test_heuristics.py
+python bench/runner.py H6d instances/satlib/uuf50-01.cnf          # une exécution, avec compteurs
+python meowdoku/solve_grid.py grille.txt --solver H7s
+python tools/validate.py --solvers H0,H1,H2s,H2d,H3s,H3d,H4s,H4d,H5s,H5d,H6s,H6d,H7s,H7d --timeout 10
+```
+
+---
+
 ## Usage des assistants IA
 
 Le projet a été réalisé avec l'aide de Claude (Anthropic) dans l'éditeur, via
@@ -596,6 +767,10 @@ brute, vérificateur direct des règles du jeu).
 - **Q3** : chaîne de résolution, vérification à deux niveaux et génération à solution
   unique proposées par l'assistant. La preuve que la réparation élimine $S_2$ sans
   casser $S_1$ (§3.2) est à maîtriser pour la soutenance.
+- **Q4** : la factorisation des heuristiques en couples (mesure, mode) a été proposée
+  par l'assistant. Les choix attendus sur l'exemple de l'énoncé ont été recalculés à
+  la main dans les tests. Le défaut des versions statiques de H4 et H5 a été trouvé
+  par ces tests.
 
 ---
 
@@ -611,5 +786,18 @@ brute, vérificateur direct des règles du jeu).
 - **[Q2]** Les fichiers DIMACS des enseignants n'étant pas disponibles au moment de la
   rédaction, la validation porte sur SATLIB et nos instances. L'outil
   `tools/validate.py` s'appliquera tel quel à leurs fichiers.
+- **[Q4] Coquilles relevées dans l'énoncé** :
+  - H5 indique la valeur « 1 si $l$ est de la forme $\neg p$ » ; nous avons compris
+    0, ce que confirme la phrase suivante ;
+  - la contrainte « au moins une heuristique fondée sur la sélection d'un littéral
+    (H3, H5 ou H6) » cite H6 (VJW), qui sélectionne une variable ; les heuristiques
+    de littéral sont H3, H5 et H7. Nous en implémentons trois ;
+  - dans l'exemple, « $\#_2(x_2,F)=1$, $\#^+(x_2,F)=2$, $\#^-(x_2,F)=1$ » répète la
+    ligne précédente. Pour la taille 2, on a $\#^+_2(x_2)=1$ et $\#^-_2(x_2)=0$ ;
+  - la formule de H7 écrit $\#_k(l,F)$ pour $occ_k(l,F)$, et les appels récursifs de
+    l'algorithme 3 sont notés DPLL au lieu de DPLL_H. Dans H0, « sa valeur de vérité
+    $p$ » désigne $b$.
+- **[Q4]** « Variable non affectée » est interprété comme « variable présente dans
+  la formule courante » (§4.2).
 - **[Q3]** L'énoncé suppose qu'une solution existe. Si ce n'est pas le cas, le
   programme le signale (code de retour 2) au lieu d'écrire un fichier.

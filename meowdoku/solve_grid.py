@@ -34,14 +34,22 @@ from meowdoku.encode import encode, decode, dimacs_comments  # noqa: E402
 from meowdoku.verify import violations, check_solution_text  # noqa: E402
 from solver.dimacs import read_dimacs, write_dimacs  # noqa: E402
 from solver import dpll  # noqa: E402
+from solver.dpllh import solve_h  # noqa: E402
+from solver.heuristics import NOMS as HEURISTIQUES  # noqa: E402
 
 
 def _dpll2(nb_vars, clauses, seed):
     return dpll.solve(nb_vars, clauses, version=2, seed=seed)
 
 
+def _dpllh(nom):
+    return lambda nb_vars, clauses, seed: solve_h(nb_vars, clauses, nom, seed)[:2]
+
+
 # Solveurs disponibles : nom -> fonction (nb_vars, clauses, graine) -> (sat, modèle)
+# « dpll » : algorithme 2 ; H0..H7d : DPLL_H avec l'heuristique correspondante.
 SOLVEURS = {"dpll": _dpll2}
+SOLVEURS.update({h: _dpllh(h) for h in HEURISTIQUES})
 
 
 class SolveError(Exception):

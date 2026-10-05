@@ -27,6 +27,8 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from solver.dimacs import read_dimacs  # noqa: E402
 from solver import dpll  # noqa: E402
+from solver.dpllh import solve_h  # noqa: E402
+from solver.heuristics import NOMS as HEURISTIQUES  # noqa: E402
 
 
 def _dpll(version):
@@ -36,10 +38,18 @@ def _dpll(version):
     return resoudre
 
 
+def _dpllh(nom):
+    def resoudre(nb_vars, clauses, seed):
+        sat, modele, st = solve_h(nb_vars, clauses, nom, seed)
+        return sat, modele, st.as_dict()
+    return resoudre
+
+
 SOLVEURS = {
     "dpll1": _dpll(1),          # algorithme 1 (statut seul)
     "dpll2": _dpll(2),          # algorithme 2 (statut + valuation)
 }
+SOLVEURS.update({h: _dpllh(h) for h in HEURISTIQUES})     # DPLL_H : H0, H1, H2s..H7d
 
 
 def main(argv=None):

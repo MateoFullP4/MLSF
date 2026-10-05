@@ -32,10 +32,18 @@ python meowdoku/verify.py solution.txt
 python meowdoku/generate.py 8 --unique --seed 3 -o grille8u.txt  # solution unique
 ```
 
+## Question 4 – Heuristiques (DPLL_H)
+
+```
+python bench/runner.py H6d instances/satlib/uuf50-01.cnf         # H0, H1, H2s/H2d ... H7s/H7d
+python meowdoku/solve_grid.py instances/meowdoku/grille1.txt --solver H7s
+```
+
 ## Tests
 
 ```
 python tests/test_meowdoku.py
 python tests/test_dpll.py
 python tests/test_solve_grid.py
+python tests/test_heuristics.py
 ```
